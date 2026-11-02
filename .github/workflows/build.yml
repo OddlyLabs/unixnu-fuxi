@@ -156,7 +156,7 @@ jobs:
         run: |
           ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
           ./unixnu status --device "$GITHUB_WORKSPACE/fuxi" --json > "$RUNNER_TEMP/unixnu-status.json" || true
-      - name: Check the touch probe, the PMGR bridge and the HID bindings in the kernel
+      - name: Check the touch probe, the PMGR bridge, the HID and RAM block bindings in the kernel
         run: |
           kernel=$(find unixnu/out -path '*/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf' | head -n 1)
           [ -n "$kernel" ] || { echo "::error::linked kernel not found"; exit 1; }
@@ -165,7 +165,7 @@ jobs:
           nm -U "$kernel" > "$RUNNER_TEMP/kernel-symbols.txt"
           missing=0
           for s in _native_touch_probe _native_touch_set_sink _fts_reset _fts_touch_apply _geni_spi_transfer _qcom_rpmh_active_request \
-                   _fuxi_hid_start _native_hid_touch_allocate; do
+                   _fuxi_hid_start _native_hid_touch_allocate _fuxi_sys_row _native_ram_block_volume_device; do
             line=$(grep -E " $s\$" "$RUNNER_TEMP/kernel-symbols.txt" || true)
             if [ -n "$line" ]; then echo "defined: $line"; else echo "::error::missing from the kernel: $s"; missing=1; fi
           done
@@ -197,6 +197,11 @@ jobs:
           # IOHIDFamily instructions and NativeHidInput's vtable against the original one in the prelinked kernel.
           if [ -n "$prelinked" ] && ! python3 fuxi/ci/check-hid-bindings.py "$prelinked"; then
             echo "::error::HID binding check failed"; missing=1
+          fi
+          # UniXNU RamBlock's NativeRamBlock (scripts/build-fuxi-ram-block.py): its fixed IOBlockStorageDevice bindings, the
+          # pinned IOStorageFamily instructions and NativeRamBlock's vtable against the original one in the prelinked kernel.
+          if [ -n "$prelinked" ] && ! python3 fuxi/ci/check-ram-block-bindings.py "$prelinked"; then
+            echo "::error::RAM block binding check failed"; missing=1
           fi
           exit $missing
       - name: Build payload

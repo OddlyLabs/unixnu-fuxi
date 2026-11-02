@@ -23,8 +23,9 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
 # The archives the merged configuration links, in build order: corecrypto from source (plain and namespaced), the ARM
 # platform and CPU drivers, SoftwareAES with its bindings (the arch fragment sets CONFIG_XNU_NATIVE_AES), libpthread, the
 # mockfs fixture (the OS fragment sets CONFIG_XNU_SOURCE_MOCKFS), the PMGR bridge (CONFIG_XNU_SHENG_PMGR: AMFI needs an
-# ApplePMGRNub service), ShengHidInput's touch digitizer (force-loaded by fuxi_defconfig; the touch probe starts it), and
-# the touch archive that bsd_init calls into (patches/xnu/fuxi-touch-probe.patch). The order follows UniXNU-sheng.
+# ApplePMGRNub service), ShengHidInput's touch digitizer (force-loaded by fuxi_defconfig; the touch probe starts it), the RAM
+# block (CONFIG_XNU_NATIVE_RAM_BLOCK: a RAM disk from the loader as a block device), and the touch archive that bsd_init
+# calls into (patches/xnu/fuxi-touch-probe.patch). The order follows UniXNU-sheng.
 archives = [
   "build-corecrypto-14.py",
   "build-corecrypto-14.py --namespace",
@@ -36,6 +37,7 @@ archives = [
   "build-mockfs-fixture.py",
   "build-fuxi-platform-power.py",
   "build-fuxi-hid-input.py",
+  "build-fuxi-ram-block.py",
   "build-fuxi-touch.py",
 ]
 

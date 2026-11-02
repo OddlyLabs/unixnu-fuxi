@@ -16,6 +16,10 @@ CONFIG_XNU_DT_PANIC_REGION=y
 # AMFI waits for an ApplePMGRNub service: the PMGR bridge (scripts/build-fuxi-platform-power.py, boot argument
 # sheng-pmgr=2) publishes the original one. Its power operations stop with a panic; it is not power management.
 CONFIG_XNU_SHENG_PMGR=y
+# The RAM block (UniXNU RamBlock's NativeRamBlock, scripts/build-fuxi-ram-block.py): the native personality starts it, and it
+# publishes a RAM disk the loader hands over (/chosen/memory-map RAMDisk or PackedRAMDisk) as a block device, which APFS
+# attaches to. Without a RAM disk its start returns false and nothing else changes.
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
 # bsd_init calls native_touch_probe() (patches/xnu/fuxi-touch-probe.patch); scripts/build-fuxi-touch.py builds it. The
 # HID digitizer (scripts/build-fuxi-hid-input.py) is force-loaded: its objects carry the absolute IOHIDDevice bindings and
 # the metaclass registration that kits/fuxi/FuxiHidProbe.cpp runs after IOHIDFamily is loaded.

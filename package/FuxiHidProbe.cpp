@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// Starts the touch digitizer of ShengHidInput (NativeHidInput.cpp, an unchanged copy of UniXNU ShengHidInput 71a40e7) for the
+// Starts the HID device of ShengHidInput (NativeHidInput.cpp, an unchanged copy of UniXNU ShengHidInput 71a40e7) for the
 // fuxi touch probe and provides the three board functions it calls. It follows UniXNU-sheng package/HidInputProbe.cpp
-// (native_hid_input_probe, native_hid_live_checkpoint) without sheng's display hooks and Home-button automation: fuxi has
-// no button driver, so only the touch-only device (native_hid_touch_allocate) is created. FuxiTouchProbe.cpp calls
-// fuxi_hid_start once sensing runs, with the boot argument fuxi-touch-hid=1; the device then turns every contact set the
-// probe publishes into a digitizer report (native_touch_hid_reports, the hid counter of the touch report).
+// (native_hid_input_probe, native_hid_live_checkpoint) without sheng's display hooks and Home-button automation. It creates
+// sheng's default device, keyboard collection first and digitizer second (native_hid_input_allocate, with sheng-touch-hid=1
+// for the digitizer), the arrangement whose event driver attaches; on the device the touch-only one (sheng-touch-split)
+// started but no IOHIDEventDriver attached to it (evidence/2026-11-02-first-boot.md). FuxiTouchProbe.cpp calls
+// fuxi_hid_start once sensing runs, with fuxi-touch-hid=1; the device then turns every contact set the probe publishes into a
+// digitizer report (native_touch_hid_reports, the hid counter of the touch report).
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <libkern/libkern.h>
@@ -20,25 +22,26 @@ extern kmod_info_t g_kernel_kmod_info;
 // NativeHidInput's static initializer. scripts/build-fuxi-hid-input.py takes it out of __mod_init_func: the metaclass it
 // registers derives from IOHIDDevice, which exists only once IOHIDFamily is loaded.
 extern "C" void native_hid_static_init(void) __asm__("__GLOBAL__sub_I_NativeHidInput.cpp");
-extern "C" IOService *native_hid_touch_allocate(void);
+extern "C" IOService *native_hid_input_allocate(void);
 extern "C" {
 extern kern_return_t OSKextLoadKextWithIdentifier(const char *);
 // [0] step reached (1 IOHIDFamily, 2 IOHIDEventDriver, 3 IOHIDResource, 4 metaclass, 5 device, 6 started), [1] IOHIDFamily
 // load result, [2] IOHIDEventDriver load result, [3] IOHIDDevice instance size (208 expected), [4] IOHIDResource found,
-// [5] postModLoad result, [6] device (1 allocated, 2 initialized, 3 attached, 4 started), [7] step that failed (0 none).
+// [5] postModLoad result, [6] device (1 allocated, 2 initialized, 3 attached, 4 started), [7] step that failed (0 none; 6: the
+// digitizer needs sheng-touch-hid=1).
 volatile int fuxi_hid_state[8] = {0, -1, -1, 0, 0, -1, 0, 0};
-// native_hid_input_observed: how often each event happened and its last result (2 device started, 6 touch report).
+// native_hid_input_observed: how often each event happened and its last result (2 device started, 3 timer, 6 touch report).
 volatile uint32_t native_hid_input_events[8];
 volatile int native_hid_input_results[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 volatile uint32_t fuxi_hid_driver;   // 1 once an IOHIDEventDriver is attached below the device
 extern volatile uint32_t native_touch_edge_stats[4];   // NativeHidInput: [0] edge wrapper installed
 }
 
-extern "C" bool native_hid_input_requested(void) {return false;}   // no Home presses: the combined device is not created
+extern "C" bool native_hid_input_requested(void) {return false;}   // no automatic Home presses
 
-// The combined device would register here for the hardware buttons. fuxi has no button driver and creates only the touch-only
-// device, but the kernel is linked statically, so NativeHidInput's weak import still needs a definition (run 41437861526
-// stopped at the link without it). The sink is accepted and never called.
+// The device registers here for the hardware buttons. fuxi has no button driver, but the kernel is linked statically, so
+// NativeHidInput's weak import still needs a definition (run 41437861526 stopped at the link without it). The sink is
+// accepted and never called.
 extern "C" void native_buttons_set_sink(void (*)(void *, uint32_t), void *) {}
 
 extern "C" void native_hid_input_observed(unsigned event, int result) {
@@ -106,7 +109,9 @@ static void startThread(void *, wait_result_t) {
     if (handle) {native_hid_static_init(); st[5] = OSMetaClass::postModLoad(handle);}
     if (!handle || st[5]) {st[7] = 4; resource->release(); return;}
     st[0] = 5;
-    IOService *device = native_hid_touch_allocate();
+    unsigned touch = 0;
+    if (!PE_parse_boot_argn("sheng-touch-hid", &touch, sizeof touch) || touch != 1) {st[7] = 6; resource->release(); return;}
+    IOService *device = native_hid_input_allocate();
     bool ok = device && device->metaCast("IOHIDDevice");
     if (ok) {st[6] = 1; ok = device->init();}
     if (ok) {st[6] = 2; ok = device->attach(resource);}
@@ -142,13 +147,13 @@ extern "C" bool fuxi_hid_settled(void) {
 }
 
 // One report row: step and failed step, the two load results, the IOHIDDevice size, the resource, the metaclass registration,
-// the device's progress, whether an event driver attached, the device's start count, the reports sent with the last result,
-// and whether the edge wrapper was installed on the event driver.
+// the device's progress, whether an event driver attached, the device's start count, its once-a-second timer (count and whether
+// it saw the event driver: 1), the reports sent with the last result, and whether the edge wrapper was installed.
 extern "C" const char *fuxi_hid_row(char *out, size_t size) {
     const volatile int *st = fuxi_hid_state;
-    snprintf(out, size, "\nHID st%d f%d fam%x evd%x sz%d res%d meta%x dev%d drv%u up%u rep%u/%x edge%u",
+    snprintf(out, size, "\nHID st%d f%d fam%x evd%x sz%d res%d meta%x dev%d drv%u up%u tk%u/%d rep%u/%x edge%u",
              st[0], st[7], static_cast<unsigned>(st[1]), static_cast<unsigned>(st[2]), st[3], st[4], static_cast<unsigned>(st[5]),
-             st[6], fuxi_hid_driver, native_hid_input_events[2], native_hid_input_events[6],
-             static_cast<unsigned>(native_hid_input_results[6]), native_touch_edge_stats[0]);
+             st[6], fuxi_hid_driver, native_hid_input_events[2], native_hid_input_events[3], native_hid_input_results[3],
+             native_hid_input_events[6], static_cast<unsigned>(native_hid_input_results[6]), native_touch_edge_stats[0]);
     return out;
 }

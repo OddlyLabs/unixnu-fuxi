@@ -258,6 +258,9 @@ transfer failed.
 | s1-smp, all cores started (17:29:53) | `adb reboot bootloader` from running Android | touch report |
 | s2-smp, all cores started (17:52:29) | `adb reboot bootloader` from running Android | touch report |
 | s3-selfipi, all cores started (17:59:41) | by hand from the s2-smp panic screen | touch report |
+| h1-hid, 2026-11-03 (07:31:29) | already in fastboot when the batch started; how it got there was not recorded | root device wait |
+| h2-edge (07:34:38) | by hand from the h1-hid panic screen | touch report |
+| h3-sgi (07:36:21) | by hand from the h2-edge panic screen | touch report |
 
 The same bytes reset once and ran twice, and `armcpu-diagnostics=1` reported nothing, so the reset is intermittent and its
 cause is unknown. Starting from Android by itself does not bring it back. The first run remains the only one that entered
@@ -393,3 +396,85 @@ other boot (rows 1 and 2 are unchanged). The controller never answered: no ready
 fallback (`rst-19/3 sp41`, -19 is FTS_ERR_CHIP), and the chip id reads `00 00`, while no transfer failed (`xf0`), so the SPI
 engine ran. Every boot with the votes reads `36 40`. So at least on a boot that entered fastboot by hand from a panic screen,
 as this one did, the touch rails are not usable until the probe votes them: the votes are needed.
+
+## HID, SMP variants and the restore ramdisk (2026-11-03, run 41542742755, device commit 22579b4)
+
+All four images use kernel `07656be0` of run 41542742755 and firmware volume `42cfcc46`. They ran as one batch, the phone
+already in fastboot; after each photograph the owner forced fastboot, and the next image was booted. For h2-edge and h3-sgi
+the owner photographed the panel twice: early, while it showed the three bands and the end of the firmware log, and at the
+report, which paints over the magenta band. The photographs are matched to the images by their order.
+
+| Image | Started | Arguments beyond `-v serial=3 debug=0x14e kt_fixed_zones=120 sheng-pmgr=2` | SHA-256 | Result |
+| --- | --- | --- | --- | --- |
+| h1-hid | 07:31:29 | `sheng-smp=1 armcpu-spi-ipi=1 armcpu-self-ipi=1 fuxi-touch=4 fuxi-touch-hid=1 fuxi-touch-panic=2` | `fcc0fd7fc4d10f8f` | no reset; panel: `Failed to mount root device` |
+| h2-edge | 07:34:38 | h1-hid's plus `armcpu-edge=1` | `65d0dbc3039bec62` | no reset; panel: touch report |
+| h3-sgi | 07:36:21 | h1-hid's without `armcpu-spi-ipi=1` | `b7064ed8aff71697` | no reset; panel: touch report |
+| r2-ramblock | 07:38:24 | h1-hid's; the restore ramdisk as a packed RAM disk, its trust cache, `root_match_volume_uuid` | `25026daa23badab2` | no reset; panel: `rootvp not authenticated after mounting` |
+
+h1-hid:
+
+```
+Failed to mount root device @IOKitBSDInit.cpp:984
+frames fffffff007a265c8 fffffff00792d898 fffffff0076b9c44 fffffff00799fe5c fffffff0073fb4a4
+pages=0x0000000000127053
+free=0x0000000000125a38
+```
+
+With HID the probe ends its run only at a lift after the HID start has settled (20 s at most); the owner's tap came before
+that, and the root device wait ran out before another.
+
+h2-edge and h3-sgi (rows 1 to 3 as before in both):
+
+```
+h2-edge:
+FTS rd331 ev385 in10 mv363 up10 er0/00 rdy0 rearm0 c0 4890,13226 hid0 irq330/0 xf0
+SMP run0 c1 b0 cpu0 av1 st4444444 f0000000 psci0,0,0,0,0,0,0 ipi1/1
+SMP tmr2296/0/0/0/0/0/0/0 ipi1/0/0/0/0/0/0/0
+HID st6 f0 fam0 evd0 sz208 res1 meta0 dev4 drv0 up1 rep0/ffffffff edge0 @FuxiTouchProbe.cpp:590
+frames fffffff007a2a0b4 fffffff0079840a0 fffffff0073fb4a4
+pages=0x0000000000127052
+free=0x0000000000125bb7
+
+h3-sgi:
+FTS rd384 ev632 in9 mv613 up8 er0/00 rdy0 rearm0 c1 8135,11076 hid0 irq383/0 xf0
+SMP run7 c1 b0 cpu5 av8 st7777777 f0000000 psci0,0,0,0,0,0,0 ipi8/0
+SMP tmr75/0/0/777/747/256/244/233 ipi0/0/0/0/0/0/0/0
+HID st6 f0 fam0 evd0 sz208 res1 meta0 dev4 drv0 up1 rep0/ffffffff edge0 @FuxiTouchProbe.cpp:590
+frames fffffff007a2a0b4 fffffff0079840a0 fffffff0073fb4a4
+pages=0x0000000000127050
+free=0x0000000000125ab5
+```
+
+Reading:
+
+- HID: IOHIDFamily and IOHIDEventDriver loaded (`fam0 evd0`), IOHIDDevice has the expected 208 bytes, IOHIDResource was
+  found, NativeHidInput's metaclass registered, and the touch-only device started (`st6 dev4 up1`); but no IOHIDEventDriver
+  attached below it (`drv0`), so no report was sent (`rep0`, `hid0`). NativeHidInput's own comments name sheng's default
+  device, keyboard collection first and digitizer second, as the arrangement whose event driver attaches on hardware; the
+  touch-only device is sheng's opt-in (`sheng-touch-split`). FuxiHidProbe.cpp now creates the default one, which takes its
+  digitizer from `sheng-touch-hid=1`.
+- SGI: without `armcpu-spi-ipi=1` the eight cores sent their self-IPIs through ICC_SGI1R_EL1 (`ipi8/0`) and took none. All
+  cores ran, as in s2-smp without IPIs. SGIs do not arrive on fuxi either, so `armcpu-spi-ipi=1` is required.
+- h2-edge: no secondary core started. CPU_ON returned 0 for all seven, but none entered initCPU (step 4), and the scheduler
+  ran on core 0 alone (`av1`, 2296 timer interrupts there). `armcpu-edge=1` is read only after processor_start returns for a
+  core, so it cannot hold a core before initCPU: this is one boot of six with `sheng-smp=1` whose cores did not start, cause
+  unknown, and the intended Edge test did not happen.
+- The many touches (`in10`, `in9`) are early taps, which do not end a HID run.
+
+r2-ramblock:
+
+```
+rootvp not authenticated after mounting @bsd_init.c:1107
+frames fffffff0079e82ac fffffff0076b9f5c fffffff00799fe5c fffffff0073fb4a4
+pages=0x000000000011eec0
+free=0x00000000001153a5
+```
+
+The RAM disk path worked up to the root mount. DarwinBoot handed over the packed restore ramdisk, NativeRamBlock published
+it, APFS attached to the whole disk (its AppleAPFSContainerScheme matches IOMedia with `Whole` = true), IOFindBSDRoot found
+the volume `9071148B-B025-402D-AD7A-48464D8B5FFF` through /chosen/root-matching, and vfs_mountroot mounted it; the managed
+pages are 0x8193 (129.6 MiB) below h1-hid's, the size of the packed disk. bsd_init then requires an authenticated (sealed)
+root on every non-macOS boot (FSIOC_KERNEL_ROOTAUTH) unless `bsd_rooted_ramdisk()` is true, and that function only compares
+the `rd` boot argument with the prefix `md0`. A restore ramdisk is not sealed: the bootloader verifies it and boots it with
+`rd=md0`. With `rd=md0-ramblock` the check is skipped, while IOFindBSDRoot, which takes its md path only for a value of
+exactly three characters (as IORamDiskBSDRoot does), still roots through the UUID match.

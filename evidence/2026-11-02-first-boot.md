@@ -261,6 +261,9 @@ transfer failed.
 | h1-hid, 2026-11-03 (07:31:29) | already in fastboot when the batch started; how it got there was not recorded | root device wait |
 | h2-edge (07:34:38) | by hand from the h1-hid panic screen | touch report |
 | h3-sgi (07:36:21) | by hand from the h2-edge panic screen | touch report |
+| h4-hid (08:16:27) | by hand (in fastboot when the batch found it) | touch report |
+| h5-edge (08:17:38) | by hand from the h4-hid panic screen | touch report |
+| r3-ramblock, second run (08:22:41) | fastboot, entered by hand during the first run | touch report |
 
 The same bytes reset once and ran twice, and `armcpu-diagnostics=1` reported nothing, so the reset is intermittent and its
 cause is unknown. Starting from Android by itself does not bring it back. The first run remains the only one that entered
@@ -478,3 +481,66 @@ root on every non-macOS boot (FSIOC_KERNEL_ROOTAUTH) unless `bsd_rooted_ramdisk(
 the `rd` boot argument with the prefix `md0`. A restore ramdisk is not sealed: the bootloader verifies it and boots it with
 `rd=md0`. With `rd=md0-ramblock` the check is skipped, while IOFindBSDRoot, which takes its md path only for a value of
 exactly three characters (as IORamDiskBSDRoot does), still roots through the UUID match.
+
+## User space from the restore ramdisk, and HID reports (2026-11-03, run 41549315222, device commit 11db5c0)
+
+All images use kernel `1861dd5d` of run 41549315222 and firmware volume `42cfcc46`, and add their arguments to
+`-v serial=3 debug=0x14e kt_fixed_zones=120 sheng-pmgr=2 sheng-smp=1 armcpu-spi-ipi=1 armcpu-self-ipi=1`. h4-hid, h5-edge and
+the first run of r3-ramblock ran as one batch; the owner returned the phone to fastboot about 11 s after r3-ramblock left it,
+before photographing, and asked for a second run.
+
+| Image | Started | Added arguments | SHA-256 | Result |
+| --- | --- | --- | --- | --- |
+| h4-hid | 08:16:27 | `fuxi-touch=4 fuxi-touch-hid=1 sheng-touch-hid=1 fuxi-touch-panic=2` | `10955c46c71c7b35` | no reset; panel: touch report |
+| h5-edge | 08:17:38 | h4-hid's plus `armcpu-edge=1` | `c2a3653351ae6384` | no reset; panel: touch report |
+| r3-ramblock | 08:22:41 (second run) | `fuxi-touch=4 fuxi-touch-panic=2 rd=md0-ramblock`; the packed restore ramdisk, its trust cache, `root_match_volume_uuid` | `cd5a110268c79ce7` | no reset; panel: touch report with a SYS row |
+
+h4-hid and h5-edge, matched by the order of the photographs (rows 1 to 3 as before; the two reports differ only in their
+counts, so nothing below depends on the order):
+
+```
+h4-hid:
+FTS rd98 ev185 in2 mv180 up1 er0/00 rdy0 rearm0 c1 3415,14133 hid68 irq97/0 xf0
+SMP run7 c1 b0 cpu6 av8 st7777777 f0000000 psci0,0,0,0,0,0,0 ipi189/189
+SMP tmr73/0/0/2038/10/9/1/3 ipi1/1/1/117/63/4/1/1
+HID st6 f0 fam0 evd0 sz208 res1 meta0 dev4 drv1 up1 tk10/1 rep68/0 edge1 @FuxiTouchProbe.cpp:590
+frames fffffff007a2a128 fffffff0079840a0 fffffff0073fb4a4
+pages=0x0000000000127051
+free=0x0000000000125a36
+
+h5-edge:
+FTS rd69 ev136 in2 mv131 up1 er0/00 rdy0 rearm0 c1 4452,11254 hid40 irq68/0 xf0
+SMP run7 c1 b0 cpu5 av8 st7777777 f0000000 psci0,0,0,0,0,0,0 ipi175/174
+SMP tmr73/0/0/2031/11/12/4/2 ipi1/1/1/103/64/3/1/1
+HID st6 f0 fam0 evd0 sz208 res1 meta0 dev4 drv1 up1 tk10/1 rep40/0 edge1 @FuxiTouchProbe.cpp:590
+frames fffffff007a2a128 fffffff0079840a0 fffffff0073fb4a4
+pages=0x0000000000127052
+free=0x0000000000125a37
+```
+
+r3-ramblock, second run:
+
+```
+FTS rd50 ev98 in2 mv93 up1 er0/00 rdy0 rearm0 c1 3997,11725 hid0 irq49/0 xf0
+SMP run7 c1 b0 cpu3 av8 st7777777 f0000000 psci0,0,0,0,0,0,0 ipi363/363
+SMP tmr7/2/0/2485/45/19/1204/0 ipi12/4/1/232/88/15/8/3
+SYS root apfs /dev/disk1s1 1:launchd 3:restored_externa 4:mount_tmpfs n3 @FuxiTouchProbe.cpp:590
+frames fffffff007a2a128 fffffff0079840a0 fffffff0073fb4a4
+pages=0x000000000011eebf
+free=0x000000000010eec9
+```
+
+Reading:
+
+- HID works up to IOHIDFamily: an IOHIDEventDriver attached to sheng's default device (`drv1`; the device's own timer saw it
+  on each of its 10 ticks, `tk10/1`), every contact set the probe published went out as a HID report without error
+  (`rep68/0` with `hid68`, `rep40/0` with `hid40`), and the edge wrapper was installed on the event driver (`edge1`). No
+  user-space consumer runs in these boots.
+- SMP: all seven secondary cores started in all three boots; counting the nine boots with `sheng-smp=1` so far, they failed to
+  start once. With `armcpu-edge=1` cores 1 and 2 still took no timer interrupt in a probe boot.
+- User space: with `rd=md0-ramblock` bsd_init skipped the sealed-root check, and the restore ramdisk's user space ran. The root
+  is APFS on `/dev/disk1s1`, the ramdisk's volume through NativeRamBlock; pid 1 is launchd, pid 3 restored_external (the name
+  is cut at 16 characters) and pid 4 mount_tmpfs, three processes in all, within two minutes of the phone leaving fastboot.
+  AMFI let them run with the restore trust cache. With user space running, work reached the efficiency cores: core 1 took 2
+  timer interrupts, and IPIs reached every core.
+- The kernel manages 0x8192 pages fewer than in h4-hid, the packed disk again.
